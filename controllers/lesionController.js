@@ -28,6 +28,8 @@ const createLesion = async (req, res) => {
       name,
       bodyLocation,
       notes,
+      imagePath: req.body.imagePath || null,
+      reminderDate: req.body.reminderDate || null,
     });
     
     if (req.body.initialScan) {
@@ -35,6 +37,10 @@ const createLesion = async (req, res) => {
       lesion.latestRisk = req.body.initialScan.riskLevel;
       lesion.lastScan = req.body.initialScan.date || Date.now();
       lesion.firstDetected = req.body.initialScan.date || Date.now();
+      // Use the scan's imagePath as the lesion's main image if not set
+      if (!lesion.imagePath && req.body.initialScan.imagePath) {
+        lesion.imagePath = req.body.initialScan.imagePath;
+      }
       await lesion.save();
     }
     
@@ -83,7 +89,7 @@ const addScanToLesion = async (req, res) => {
     
     const newScan = {
       ...analysisResult,
-      imagePath: req.file ? `/uploads/${req.file.filename}` : null
+      imagePath: req.file ? req.file.path : null
     };
 
     lesion.scanHistory.push(newScan);
@@ -97,8 +103,45 @@ const addScanToLesion = async (req, res) => {
   }
 };
 
+const updateLesion = async (req, res) => {
+  try {
+    const lesion = await Lesion.findById(req.params.id);
+    
+    if (!lesion) {
+      return res.status(404).json({ message: 'Lesion not found' });
+    }
+    
+    if (lesion.userId.toString() !== req.user.id) {
+      return res.status(401).json({ message: 'User not authorized' });
+    }
+
+    // Update fields
+    if (req.body.name) lesion.name = req.body.name;
+    if (req.body.bodyLocation) lesion.bodyLocation = req.body.bodyLocation;
+    if (req.body.notes !== undefined) lesion.notes = req.body.notes;
+    if (req.body.imagePath) lesion.imagePath = req.body.imagePath;
+    if (req.body.reminderDate !== undefined) lesion.reminderDate = req.body.reminderDate;
+    
+    // Replace scan history if provided (the mobile app sends the full array)
+    if (req.body.scanHistory) {
+      lesion.scanHistory = req.body.scanHistory;
+      if (lesion.scanHistory.length > 0) {
+        const latest = lesion.scanHistory[lesion.scanHistory.length - 1];
+        lesion.latestRisk = latest.riskLevel;
+        lesion.lastScan = latest.date || Date.now();
+      }
+    }
+
+    const updatedLesion = await lesion.save();
+    res.json(updatedLesion);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 module.exports = {
   getLesions,
   createLesion,
   addScanToLesion,
+  updateLesion,
 };

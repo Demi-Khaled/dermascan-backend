@@ -8,7 +8,7 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-const storage = new CloudinaryStorage({
+const profileStorage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
     folder: 'dermascan_profiles',
@@ -17,6 +17,19 @@ const storage = new CloudinaryStorage({
   },
 });
 
-const upload = multer({ storage: storage });
+const lesionStorage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'dermascan_lesions',
+    allowed_formats: ['jpg', 'png', 'jpeg'],
+  },
+});
 
-module.exports = upload;
+const profileUpload = multer({ storage: profileStorage });
+const lesionUpload = multer({ storage: lesionStorage });
+
+module.exports = {
+  cloudinary,
+  profileUpload,
+  lesionUpload,
+};

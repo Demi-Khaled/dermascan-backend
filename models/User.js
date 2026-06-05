@@ -10,6 +10,7 @@ const userSchema = new mongoose.Schema({
     type: String,
     required: true,
     unique: true,
+    match: [/^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'Please enter a valid email address'],
   },
   password: {
     type: String,
@@ -46,11 +47,25 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  isVerified: {
+    type: Boolean,
+    default: false,
+  },
+  verificationOTP: {
+    type: String,
+  },
+  verificationOTPExpires: {
+    type: Date,
+  },
   resetPasswordOTP: {
     type: String,
   },
   resetPasswordOTPExpires: {
     type: Date,
+  },
+  tokenVersion: {
+    type: Number,
+    default: 0,
   },
 });
 

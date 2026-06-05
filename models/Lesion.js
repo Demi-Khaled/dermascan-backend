@@ -51,6 +51,14 @@ const lesionSchema = new mongoose.Schema({
     default: '',
   },
   scanHistory: [scanEntrySchema],
+  imagePath: {
+    type: String,
+    default: null,
+  },
+  reminderDate: {
+    type: Date,
+    default: null,
+  },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Lesion', lesionSchema);

@@ -17,12 +17,34 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// Helper to send registration verification email
+const sendVerificationEmail = async (email, otp) => {
+  const mailOptions = {
+    from: `"DermaScan AI" <${process.env.EMAIL_USER || 'no-reply@dermascan.ai'}>`,
+    to: email,
+    subject: 'DermaScan Email Verification Code',
+    text: `Your OTP for email verification is: ${otp}. It will expire in 10 minutes.`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 10px;">
+        <h2 style="color: #4f46e5; text-align: center;">DermaScan AI</h2>
+        <p>Welcome to DermaScan!</p>
+        <p>Please use the OTP below to verify your email and complete your sign up:</p>
+        <div style="background: #f3f4f6; padding: 15px; text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 5px; color: #1f2937; border-radius: 8px;">
+          ${otp}
+        </div>
+        <p style="color: #6b7280; font-size: 14px; margin-top: 20px;">This OTP will expire in 10 minutes. If you did not sign up for DermaScan, please ignore this email.</p>
+      </div>
+    `,
+  };
+  await transporter.sendMail(mailOptions);
+};
+
 // Generate tokens
-const generateTokens = (id) => {
-  const accessToken = jwt.sign({ id }, process.env.JWT_SECRET, {
+const generateTokens = (id, tokenVersion = 0) => {
+  const accessToken = jwt.sign({ id, tokenVersion }, process.env.JWT_SECRET, {
     expiresIn: '15m', // Short-lived access token
   });
-  const refreshToken = jwt.sign({ id }, process.env.JWT_SECRET, {
+  const refreshToken = jwt.sign({ id, tokenVersion }, process.env.JWT_SECRET, {
     expiresIn: '30d', // Long-lived refresh token
   });
   return { accessToken, refreshToken };
@@ -39,31 +61,53 @@ const registerUser = async (req, res) => {
       return res.status(400).json({ message: 'Please add all fields' });
     }
 
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ message: 'Please enter a valid email address' });
+    }
+
     const userExists = await User.findOne({ email });
 
     if (userExists) {
+      if (userExists.isVerified === false) {
+        // Regenerate OTP and update user details to allow retrying
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        userExists.verificationOTP = otp;
+        userExists.verificationOTPExpires = Date.now() + 10 * 60 * 1000;
+        userExists.name = name;
+        userExists.password = password; // Will be hashed in pre-save hook
+        await userExists.save();
+
+        await sendVerificationEmail(email, otp);
+
+        return res.status(200).json({
+          message: 'Verification code resent. Please verify your email.',
+          requiresVerification: true,
+          email: email,
+        });
+      }
       return res.status(400).json({ message: 'User already exists' });
     }
+
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
 
     const user = await User.create({
       name,
       email,
       password,
+      isVerified: false,
+      verificationOTP: otp,
+      verificationOTPExpires: otpExpires,
     });
 
     if (user) {
-      const { accessToken, refreshToken } = generateTokens(user._id);
-      res.status(201).json({
-        _id: user.id,
-        name: user.name,
+      await sendVerificationEmail(email, otp);
+      res.status(200).json({
+        message: 'Verification code sent. Please check your email.',
+        requiresVerification: true,
         email: user.email,
-        age: user.age,
-        skinType: user.skinType,
-        medicalConditions: user.medicalConditions,
-        profilePicture: user.profilePicture,
-        isDarkMode: user.isDarkMode,
-        token: accessToken,
-        refreshToken: refreshToken,
       });
     } else {
       res.status(400).json({ message: 'Invalid user data' });
@@ -83,7 +127,23 @@ const loginUser = async (req, res) => {
     const user = await User.findOne({ email });
 
     if (user && user.password && (await bcrypt.compare(password, user.password))) {
-      const { accessToken, refreshToken } = generateTokens(user._id);
+      if (user.isVerified === false) {
+        // Resend registration OTP
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        user.verificationOTP = otp;
+        user.verificationOTPExpires = Date.now() + 10 * 60 * 1000;
+        await user.save();
+
+        await sendVerificationEmail(email, otp);
+
+        return res.status(403).json({
+          message: 'Please verify your email. A new verification code has been sent.',
+          requiresVerification: true,
+          email: email,
+        });
+      }
+
+      const { accessToken, refreshToken } = generateTokens(user._id, user.tokenVersion);
       res.json({
         _id: user.id,
         name: user.name,
@@ -118,7 +178,7 @@ const refreshAccessToken = async (req, res) => {
     const user = await User.findById(decoded.id);
     if (!user) return res.status(401).json({ message: 'User not found' });
 
-    const tokens = generateTokens(user._id);
+    const tokens = generateTokens(user._id, user.tokenVersion);
     res.json({
       token: tokens.accessToken,
       refreshToken: tokens.refreshToken,
@@ -156,7 +216,7 @@ const updateUser = async (req, res) => {
 
     await user.save();
 
-    const { accessToken, refreshToken } = generateTokens(user._id);
+    const { accessToken, refreshToken } = generateTokens(user._id, user.tokenVersion);
     res.json({
       _id: user.id,
       name: user.name,
@@ -224,13 +284,17 @@ const googleLogin = async (req, res) => {
         name,
         email,
         googleId,
+        isVerified: true, // Google emails are pre-verified
       });
-    } else if (!user.googleId) {
-      user.googleId = googleId;
+    } else {
+      if (!user.googleId) {
+        user.googleId = googleId;
+      }
+      user.isVerified = true; // Auto-verify if they link with Google
       await user.save();
     }
 
-    const { accessToken, refreshToken } = generateTokens(user._id);
+    const { accessToken, refreshToken } = generateTokens(user._id, user.tokenVersion);
     res.status(200).json({
       _id: user.id,
       name: user.name,
@@ -415,6 +479,96 @@ const resetPassword = async (req, res) => {
   }
 };
 
+// @desc    Logout user (invalidate tokens)
+// @route   POST /api/auth/logout
+// @access  Private
+const logoutUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (user) {
+      user.tokenVersion += 1;
+      await user.save();
+    }
+    res.json({ message: 'Logged out successfully' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Verify registration OTP
+// @route   POST /api/auth/verify-registration
+// @access  Public
+const verifyRegistration = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) {
+      return res.status(400).json({ message: 'Please provide email and OTP' });
+    }
+
+    const user = await User.findOne({
+      email,
+      verificationOTP: otp,
+      verificationOTPExpires: { $gt: Date.now() },
+    });
+
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid or expired verification code' });
+    }
+
+    user.isVerified = true;
+    user.verificationOTP = undefined;
+    user.verificationOTPExpires = undefined;
+    await user.save();
+
+    const { accessToken, refreshToken } = generateTokens(user._id, user.tokenVersion);
+    res.status(200).json({
+      _id: user.id,
+      name: user.name,
+      email: user.email,
+      age: user.age,
+      skinType: user.skinType,
+      medicalConditions: user.medicalConditions,
+      profilePicture: user.profilePicture,
+      isDarkMode: user.isDarkMode,
+      token: accessToken,
+      refreshToken: refreshToken,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Resend registration verification OTP
+// @route   POST /api/auth/resend-verification
+// @access  Public
+const resendVerificationOTP = async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ message: 'Please provide an email' });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    if (user.isVerified) {
+      return res.status(400).json({ message: 'User is already verified' });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.verificationOTP = otp;
+    user.verificationOTPExpires = Date.now() + 10 * 60 * 1000;
+    await user.save();
+
+    await sendVerificationEmail(email, otp);
+    res.status(200).json({ message: 'Verification code resent successfully' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 module.exports = {
   registerUser,
   loginUser,
@@ -427,4 +581,7 @@ module.exports = {
   forgotPassword,
   verifyOTP,
   resetPassword,
+  logoutUser,
+  verifyRegistration,
+  resendVerificationOTP,
 };
