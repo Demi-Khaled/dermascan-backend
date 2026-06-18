@@ -3,6 +3,78 @@ const FormData = require('form-data');
 
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL;
 
+/**
+ * Uses Groq's vision model to verify the uploaded image actually shows a skin lesion.
+ * Returns { valid: boolean, reason: string }
+ */
+const validateSkinLesionImage = async (imageBuffer, contentType) => {
+  try {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) return { valid: true }; // Skip validation if key missing
+
+    // Convert image buffer to base64
+    const base64Image = imageBuffer.toString('base64');
+    const mimeType = contentType || 'image/jpeg';
+
+    const url = 'https://api.groq.com/openai/v1/chat/completions';
+    const response = await axios.post(url, {
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image_url',
+              image_url: { url: `data:${mimeType};base64,${base64Image}` },
+            },
+            {
+              type: 'text',
+              text: `You are a medical image validation assistant for a dermatology app.
+Examine this image carefully and determine if it shows a human skin lesion, mole, rash, or any skin condition suitable for dermatological analysis.
+
+Answer ONLY in this exact JSON format (no extra text):
+{"is_skin_lesion": true/false, "reason": "brief reason in one sentence"}
+
+Consider it a valid skin lesion image if it shows:
+- A mole, nevus, or pigmented spot on skin
+- A rash, lesion, or abnormal skin area
+- Any skin condition close up on a human body
+
+Consider it INVALID if it shows:
+- Animals, food, objects, or scenery
+- A full body portrait or face (not focusing on a skin lesion)
+- Blurry images where no skin is visible
+- Screenshots, documents, or computer screens`,
+            },
+          ],
+        },
+      ],
+      temperature: 0.1,
+      max_tokens: 100,
+    }, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      timeout: 20000,
+    });
+
+    if (response.data?.choices?.length > 0) {
+      const raw = response.data.choices[0].message.content.trim();
+      // Extract JSON from the response (sometimes the model wraps it in markdown)
+      const jsonMatch = raw.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return { valid: parsed.is_skin_lesion === true, reason: parsed.reason };
+      }
+    }
+  } catch (err) {
+    console.error('Vision validation error:', err.response?.data || err.message);
+    // On validation error, allow the request through so we don't block legitimate users
+  }
+  return { valid: true };
+};
+
 // Helper function to generate a dynamic doctor-like explanation
 const generateDoctorExplanation = async (className, riskLevel, confidence) => {
   try {
@@ -67,15 +139,27 @@ const analyzeImage = async (req, res) => {
       timeout: 15000,
     });
 
-    // 2. Build multipart form-data for the AI service
+    const imageBuffer = Buffer.from(imageResponse.data);
+    const contentType = imageResponse.headers['content-type'] || 'image/jpeg';
+
+    // 2. Validate: is this actually a skin lesion image?
+    const validation = await validateSkinLesionImage(imageBuffer, contentType);
+    if (!validation.valid) {
+      return res.status(422).json({
+        message: 'invalid_image',
+        detail: validation.reason || 'The uploaded image does not appear to show a skin lesion.',
+      });
+    }
+
+    // 3. Build multipart form-data for the AI service
     const form = new FormData();
     const filename = req.file.originalname || 'image.jpg';
-    form.append('image', Buffer.from(imageResponse.data), {
+    form.append('image', imageBuffer, {
       filename,
-      contentType: imageResponse.headers['content-type'] || 'image/jpeg',
+      contentType,
     });
 
-    // 3. Forward to AI service /predict
+    // 4. Forward to AI service /predict
     const aiResponse = await axios.post(`${AI_SERVICE_URL}/predict`, form, {
       headers: form.getHeaders(),
       timeout: 60000, // ResNet101 CPU inference can take a few seconds
@@ -84,13 +168,13 @@ const analyzeImage = async (req, res) => {
     let { risk_level, confidence, explanation, recommendation, class_name } =
       aiResponse.data;
 
-    // 4. Generate dynamic doctor explanation using LLM
+    // 5. Generate dynamic doctor explanation using LLM
     const dynamicExplanation = await generateDoctorExplanation(class_name, risk_level, confidence);
     if (dynamicExplanation) {
       explanation = dynamicExplanation;
     }
 
-    // 5. Return structured result + the Cloudinary URL so the app can save it
+    // 6. Return structured result + the Cloudinary URL so the app can save it
     return res.status(200).json({
       risk_level,
       confidence,
