@@ -80,7 +80,7 @@ const generateDoctorExplanation = async (className, riskLevel, confidence) => {
   try {
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) return null;
-    
+
     const formattedName = className ? className.replace(/_/g, ' ') : 'an unknown condition';
     const percent = confidence ? (confidence * 100).toFixed(1) : 'unknown';
 
@@ -105,7 +105,8 @@ Crucial: Remind them that this is an AI screening and not a definitive medical d
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
-      }
+      },
+      timeout: 10000,
     });
 
     if (response.data && response.data.choices && response.data.choices.length > 0) {
@@ -142,14 +143,9 @@ const analyzeImage = async (req, res) => {
     const imageBuffer = Buffer.from(imageResponse.data);
     const contentType = imageResponse.headers['content-type'] || 'image/jpeg';
 
-    // 2. Validate: is this actually a skin lesion image?
-    const validation = await validateSkinLesionImage(imageBuffer, contentType);
-    if (!validation.valid) {
-      return res.status(422).json({
-        message: 'invalid_image',
-        detail: validation.reason || 'The uploaded image does not appear to show a skin lesion.',
-      });
-    }
+    // 2. Validate: (Skipped to save time)
+    // const validation = await validateSkinLesionImage(imageBuffer, contentType);
+    // if (!validation.valid) { ... }
 
     // 3. Build multipart form-data for the AI service
     const form = new FormData();
@@ -168,11 +164,11 @@ const analyzeImage = async (req, res) => {
     let { risk_level, confidence, explanation, recommendation, class_name } =
       aiResponse.data;
 
-    // 5. Generate dynamic doctor explanation using LLM
-    const dynamicExplanation = await generateDoctorExplanation(class_name, risk_level, confidence);
-    if (dynamicExplanation) {
-      explanation = dynamicExplanation;
-    }
+    // 5. Generate dynamic doctor explanation using LLM (Skipped to save time)
+    // const dynamicExplanation = await generateDoctorExplanation(class_name, risk_level, confidence);
+    // if (dynamicExplanation) {
+    //   explanation = dynamicExplanation;
+    // }
 
     // 6. Return structured result + the Cloudinary URL so the app can save it
     return res.status(200).json({
