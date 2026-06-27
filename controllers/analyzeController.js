@@ -143,9 +143,14 @@ const analyzeImage = async (req, res) => {
     const imageBuffer = Buffer.from(imageResponse.data);
     const contentType = imageResponse.headers['content-type'] || 'image/jpeg';
 
-    // 2. Validate: (Skipped to save time)
-    // const validation = await validateSkinLesionImage(imageBuffer, contentType);
-    // if (!validation.valid) { ... }
+    // 2. Validate
+    const validation = await validateSkinLesionImage(imageBuffer, contentType);
+    if (!validation.valid) {
+      return res.status(422).json({ 
+        message: 'Invalid Image',
+        detail: validation.reason || 'This does not appear to be a skin lesion image.'
+      });
+    }
 
     // 3. Build multipart form-data for the AI service
     const form = new FormData();
